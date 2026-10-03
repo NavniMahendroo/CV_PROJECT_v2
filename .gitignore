@@ -1,0 +1,27 @@
+# Environment & Secrets
+.env
+*.env
+
+# Datasets (Extremely large, should never be tracked)
+Datasets/
+LOL-v2/
+LOL-v1/
+lol_dataset/
+datasets/
+data/
+
+# Model Checkpoints (Large binary files)
+checkpoints/
+test_checkpoints/
+*.pth
+
+# Python Generated Files
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# IDE & OS specific
+.vscode/
+.DS_Store
+Thumbs.db
