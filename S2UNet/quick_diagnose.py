@@ -23,7 +23,17 @@ def run_diagnostics(low_dir, gt_dir=None, batch_size=4):
     print(f"Low-light Dir: {low_dir}")
     print(f"GT Dir:        {gt_dir}")
 
-    # 1. Setup DataLoader
+    # 1. Validate directories
+    if not os.path.exists(low_dir):
+        print(f"\n[ERROR] Low-light directory does not exist: {low_dir}")
+        if os.path.exists('/kaggle/input'):
+            print("\nSearching for dataset directories in /kaggle/input:")
+            for root, dirs, files in os.walk('/kaggle/input'):
+                if any(f.lower().endswith(('.png', '.jpg', '.jpeg')) for f in files):
+                    print(f"  Found {len(files)} images in: {root}")
+        return
+
+    # Auto-detect GT directory if not provided
     if gt_dir is None:
         for candidate in [
             low_dir.replace('/low', '/high').replace('\\low', '\\high'),
@@ -34,6 +44,17 @@ def run_diagnostics(low_dir, gt_dir=None, batch_size=4):
                 break
 
     dataset = MyDataset(low_dir, label_path=gt_dir, trans=True)
+    if len(dataset) == 0:
+        print(f"\n[ERROR] Found 0 images in '{low_dir}'!")
+        print(f"Folder contents: {os.listdir(low_dir)}")
+        if os.path.exists('/kaggle/input'):
+            print("\nAvailable image folders in /kaggle/input:")
+            for root, dirs, files in os.walk('/kaggle/input'):
+                image_files = [f for f in files if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                if image_files:
+                    print(f"  Found {len(image_files)} images in: {root}")
+        return
+
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     batch_data = next(iter(loader))
 
