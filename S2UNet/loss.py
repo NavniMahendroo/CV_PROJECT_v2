@@ -102,14 +102,18 @@ class S2UNetLoss(nn.Module):
         
         L_total = L_id + L_uf
         
-        # Compile stats dict for logging
+        # Compile stats dict for logging and diagnostic balance check
         stats = {
             'L_total': L_total.item(),
             'L_id': L_id.item(),
+            'L_ir': L_ir.item(),
+            'L_con': L_con.item(),
+            'L_iie': L_iie.item(),
             'L_uf': L_uf.item(),
             'L_rec': L_rec.item() if isinstance(L_rec, torch.Tensor) else L_rec,
             'L_R': L_R.item() if isinstance(L_R, torch.Tensor) else L_R,
-            'L_s': L_s.item() if isinstance(L_s, torch.Tensor) else L_s
+            'L_s': L_s.item() if isinstance(L_s, torch.Tensor) else L_s,
+            'L_il': (self.mu * L_il).item() if isinstance(L_il, torch.Tensor) else (self.mu * L_il)
         }
         
         return L_total, stats
