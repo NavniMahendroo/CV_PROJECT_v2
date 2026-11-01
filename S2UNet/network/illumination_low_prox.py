@@ -21,6 +21,9 @@ class ResBlock(nn.Module):
         self.conv2 = nn.Conv2d(out_channels, in_channels, kernel_size, stride, padding)
         self.relu = nn.ReLU(inplace=True)
         self.conv2.is_last_conv = True
+        # Zero-initialize the last conv so residual block acts as identity at step 0
+        nn.init.zeros_(self.conv2.weight)
+        nn.init.zeros_(self.conv2.bias)
 
     def forward(self, x):
         residual = x

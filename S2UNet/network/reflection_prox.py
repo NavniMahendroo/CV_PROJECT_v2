@@ -25,6 +25,9 @@ class P_ProxNet(nn.Module):
             nn.Conv2d(width, 3, 1)
         )
         self.exit[2].is_last_conv = True
+        # Zero-initialize the last conv so residual block acts as identity at step 0
+        nn.init.zeros_(self.exit[2].weight)
+        nn.init.zeros_(self.exit[2].bias)
         self.relu2 = nn.ReLU(inplace=True)
 
     def forward(self, R):
