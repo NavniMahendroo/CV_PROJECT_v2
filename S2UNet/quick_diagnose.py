@@ -120,9 +120,8 @@ def run_diagnostics(low_dir, gt_dir=None, batch_size=4):
         print(f"  Stage {s}: lambda_p = {l1:.6f} | lambda_q_low = {l2:.6f} | lambda_q_norm = {l3:.6f}")
     print("=" * 70)
 
-    # 3. Forward Pass
-    gamma_map = model.gamma_predictor(I_l)
-    I_n = torch.pow(I_l, gamma_map)
+    # 3. Forward Pass (Fixed gamma 0.8)
+    I_n = torch.pow(I_l, 0.8)
     s = 1000.0
     I_l_noisy = torch.poisson(I_l.clamp(min=1e-6, max=1.0) * s) / s
     I_n_noisy = torch.poisson(I_n.clamp(min=1e-6, max=1.0) * s) / s

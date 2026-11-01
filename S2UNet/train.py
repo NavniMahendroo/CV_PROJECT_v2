@@ -25,8 +25,12 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--num_steps', type=int, default=3)
-    parser.add_argument('--gamma', type=float, default=0.8)
+    parser.add_argument('--gamma', type=float, default=0.8, help='Fixed gamma value (Eq. 2)')
     parser.add_argument('--noise_scale', type=float, default=1000.0, help='Poisson noise scale s (Eq. 9)')
+    parser.add_argument('--lambda_1', type=float, default=0.15, help='Reflectance loss weight (paper default: 0.15)')
+    parser.add_argument('--lambda_2', type=float, default=0.05, help='Reflectance gradient weight (paper default: 0.05)')
+    parser.add_argument('--lambda_3', type=float, default=0.1, help='Smoothness weight (paper default: 0.1)')
+    parser.add_argument('--mu', type=float, default=0.01, help='Illumination estimation loss weight (paper default: 0.01)')
     return parser.parse_args()
 
 
@@ -36,10 +40,17 @@ class Trainer:
         os.makedirs(config.save_dir, exist_ok=True)
         
         self.model = RetinexUnfoldingNetUnsupervised(
-            num_steps=config.num_steps
+            num_steps=config.num_steps,
+            gamma=config.gamma
         ).to(device)
         
-        self.criterion = S2UNetLoss(num_steps=config.num_steps).to(device)
+        self.criterion = S2UNetLoss(
+            num_steps=config.num_steps,
+            lambda_1=config.lambda_1,
+            lambda_2=config.lambda_2,
+            lambda_3=config.lambda_3,
+            mu=config.mu
+        ).to(device)
         
         self.optimizer = optim.AdamW(self.model.parameters(), lr=config.lr, betas=(0.9, 0.999), weight_decay=1e-5)
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=config.epochs)
@@ -144,9 +155,8 @@ class Trainer:
 
                 self.optimizer.zero_grad()
                 
-                # Algorithm 1, Step 1: Predict Spatial Gamma Map
-                gamma_map = self.model.gamma_predictor(I_l)
-                I_n = torch.pow(I_l, gamma_map)
+                # Algorithm 1, Step 1: Pseudo-normal reference via fixed gamma (Eq. 2)
+                I_n = torch.pow(I_l, self.config.gamma)
                 
                 # Algorithm 1, Step 2: Poisson noise injection (Eq. 9)
                 s = self.config.noise_scale

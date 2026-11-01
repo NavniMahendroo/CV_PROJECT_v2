@@ -58,12 +58,12 @@ class SpatialGammaPredictor(nn.Module):
 
 
 class RetinexUnfoldingNetUnsupervised_Test(nn.Module):
-    def __init__(self, num_steps: int = 3, init_lambda=0.2):
+    def __init__(self, num_steps: int = 3, init_lambda=0.2, gamma=0.8):
         super().__init__()
         self.num_steps = num_steps
+        self.gamma = gamma
 
         self.decomposer = InitialDecomposer()
-        self.gamma_predictor = SpatialGammaPredictor()
 
         self.gradient_steps = nn.ModuleList([
             nn.ModuleDict({
@@ -77,8 +77,8 @@ class RetinexUnfoldingNetUnsupervised_Test(nn.Module):
         ])
 
     def forward(self, I_l):
-        gamma_map = self.gamma_predictor(I_l)
-        I_n = torch.pow(I_l, gamma_map)
+        # Fixed gamma 0.8 (original paper formulation)
+        I_n = torch.pow(I_l, self.gamma)
 
         R_l, L_l = self.decomposer(I_l)
         R_n, L_n = self.decomposer(I_n)
@@ -98,12 +98,12 @@ class RetinexUnfoldingNetUnsupervised_Test(nn.Module):
 
 
 class RetinexUnfoldingNetUnsupervised(nn.Module):
-    def __init__(self, num_steps: int = 3, init_lambda=0.2):
+    def __init__(self, num_steps: int = 3, init_lambda=0.2, gamma=0.8):
         super().__init__()
         self.num_steps = num_steps
+        self.gamma = gamma
 
         self.decomposer = InitialDecomposer()
-        self.gamma_predictor = SpatialGammaPredictor()
 
         self.gradient_steps = nn.ModuleList([
             nn.ModuleDict({
@@ -118,8 +118,8 @@ class RetinexUnfoldingNetUnsupervised(nn.Module):
 
     def forward(self, I_l, I_n=None, I_l_noisy=None, I_n_noisy=None):
         if I_n is None:
-            gamma_map = self.gamma_predictor(I_l)
-            I_n = torch.pow(I_l, gamma_map)
+            # Fixed gamma 0.8 (original paper formulation)
+            I_n = torch.pow(I_l, self.gamma)
 
         # Use noisy versions for ID module decomposition if provided (training)
         # Use clean versions otherwise (inference)

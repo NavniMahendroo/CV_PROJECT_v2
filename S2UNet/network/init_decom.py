@@ -32,9 +32,10 @@ class InitialDecomposer(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-        # Warm start: initialize final layer biases to +0.5 to prevent dead-ReLU collapse at step 0
+        # Warm start: initialize final layer biases (R to +0.5, L to +0.1)
+        # Prevents dead-ReLU collapse; R*L = 0.5*0.1 = 0.05 naturally matches low-light input mean (~0.06)
         nn.init.constant_(self.r_branch[2].bias, 0.5)
-        nn.init.constant_(self.l_branch[2].bias, 0.5)
+        nn.init.constant_(self.l_branch[2].bias, 0.1)
 
     def forward(self, x):
         base_feat = self.encoder(x)
