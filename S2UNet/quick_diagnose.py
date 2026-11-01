@@ -126,10 +126,51 @@ def run_diagnostics(low_dir, gt_dir=None, batch_size=4):
     I_l_noisy = torch.poisson(I_l.clamp(min=1e-6, max=1.0) * s) / s
     I_n_noisy = torch.poisson(I_n.clamp(min=1e-6, max=1.0) * s) / s
 
-    R_l_0, L_l_0, R_n_0, L_n_0, stage_outputs = model(
-        I_l, I_n=I_n, I_l_noisy=I_l_noisy, I_n_noisy=I_n_noisy
+    R_l_0, L_l_0, R_n_0, L_n_0, stage_outputs, stage_diagnostics = model(
+        I_l, I_n=I_n, I_l_noisy=I_l_noisy, I_n_noisy=I_n_noisy, return_diagnostics=True
     )
     R_T, L_l_T, L_n_T = stage_outputs[-1]
+
+    # --------------------------------------------------------------------------
+    # Check 7: Per-Stage Gradient Step & Proximal Dynamics Diagnostic
+    # --------------------------------------------------------------------------
+    print("\n" + "=" * 70)
+    print("===== DIAGNOSTIC 7: PER-STAGE GRADIENT STEP & PROXIMAL DYNAMICS =====")
+    for diag in stage_diagnostics:
+        st = diag['stage']
+        lp = diag['lambda_p']
+        lq = diag['lambda_q_low']
+        r_pre = diag['r_before']
+        r_grad = diag['r_after_grad']
+        r_prox = diag['r_after_prox']
+        l_pre = diag['l_before']
+        l_grad = diag['l_after_grad']
+        l_prox = diag['l_after_prox']
+
+        d_r_grad = r_grad - r_pre
+        d_r_prox = r_prox - r_grad
+        d_l_grad = l_grad - l_pre
+        d_l_prox = l_prox - l_grad
+
+        print(f"--- Stage {st} (lambda_p = {lp:.6f} | lambda_q_low = {lq:.6f}) ---")
+        print(f"  Reflectance R:")
+        print(f"    Before Grad Step   : mean = {r_pre:.6f}")
+        print(f"    After Grad Step    : mean = {r_grad:.6f}  (delta = {d_r_grad:+.6f})", end="")
+        if abs(d_r_grad) > 1e-4:
+            print(" [OK: Gradient descent actively updates R]")
+        else:
+            print(" [Small gradient delta]")
+        print(f"    After ProxNet      : mean = {r_prox:.6f}  (delta = {d_r_prox:+.6f})")
+
+        print(f"  Illumination L_l:")
+        print(f"    Before Grad Step   : mean = {l_pre:.6f}")
+        print(f"    After Grad Step    : mean = {l_grad:.6f}  (delta = {d_l_grad:+.6f})", end="")
+        if abs(d_l_grad) > 1e-4:
+            print(" [OK: Gradient descent actively updates L_l]")
+        else:
+            print(" [Small gradient delta]")
+        print(f"    After ProxNet      : mean = {l_prox:.6f}  (delta = {d_l_prox:+.6f})")
+    print("=" * 70)
 
     # --------------------------------------------------------------------------
     # Check 3: Output range check & clamping

@@ -116,7 +116,7 @@ class RetinexUnfoldingNetUnsupervised(nn.Module):
             }) for i in range(num_steps)
         ])
 
-    def forward(self, I_l, I_n=None, I_l_noisy=None, I_n_noisy=None):
+    def forward(self, I_l, I_n=None, I_l_noisy=None, I_n_noisy=None, return_diagnostics=False):
         if I_n is None:
             # Fixed gamma 0.8 (original paper formulation)
             I_n = torch.pow(I_l, self.gamma)
@@ -132,17 +132,44 @@ class RetinexUnfoldingNetUnsupervised(nn.Module):
         R_k, L_l_k, L_n_k = R_l, L_l, L_n
         
         stage_outputs = []
+        stage_diagnostics = []
 
         for step in range(self.num_steps):
             modules = self.gradient_steps[step]
+            
+            # Record before values if diagnosing
+            if return_diagnostics:
+                r_pre = R_k.mean().item()
+                l_pre = L_l_k.mean().item()
+
             # UF module uses CLEAN I_l, I_n for gradient computation (Eq. 7)
+            # 1. Gradient descent step on R (p_k)
             q_k = modules['p'](R_k, L_l_k, I_l, L_n_k, I_n)
+            # 2. Proximal operator on R
             R_k = modules['prox_r'](q_k)
+
+            # 3. Gradient descent step on L_l and L_n (q_k)
             q_l_k = modules['q_low'](L_l_k, R_k, I_l)
             q_n_k = modules['q_norm'](L_n_k, R_k, I_n)
+            # 4. Proximal operator on L_l and L_n
             L_l_k = modules['prox_l_l'](q_l_k)
             L_n_k = modules['prox_l_n'](q_n_k)
             
             stage_outputs.append((R_k, L_l_k, L_n_k))
 
+            if return_diagnostics:
+                stage_diagnostics.append({
+                    'stage': step + 1,
+                    'lambda_p': modules['p'].lambda_1.item(),
+                    'lambda_q_low': modules['q_low'].lambda_2.item(),
+                    'r_before': r_pre,
+                    'r_after_grad': q_k.mean().item(),
+                    'r_after_prox': R_k.mean().item(),
+                    'l_before': l_pre,
+                    'l_after_grad': q_l_k.mean().item(),
+                    'l_after_prox': L_l_k.mean().item(),
+                })
+
+        if return_diagnostics:
+            return R_l, L_l, R_n, L_n, stage_outputs, stage_diagnostics
         return R_l, L_l, R_n, L_n, stage_outputs
