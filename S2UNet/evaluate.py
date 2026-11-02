@@ -19,8 +19,17 @@ parser.add_argument('--test_gt_dir', type=str, default=None, help="Folder of GT 
 args = parser.parse_args()
 
 
-def evaluate_metric(in_dir, gt_dir=None):
+def rgb_to_y_bt601(tensor):
+    """Standard ITU-R BT.601 RGB to Y conversion (normalized [0, 1])."""
+    return 0.299 * tensor[:, 0:1, :, :] + 0.587 * tensor[:, 1:2, :, :] + 0.114 * tensor[:, 2:3, :, :]
 
+
+def rgb_to_y_matlab(tensor):
+    """Matches MATLAB rgb2ycbcr Y-channel on [0, 1] inputs."""
+    return (65.481 * tensor[:, 0:1, :, :] + 128.553 * tensor[:, 1:2, :, :] + 24.966 * tensor[:, 2:3, :, :] + 16.0) / 255.0
+
+
+def evaluate_metric(in_dir, gt_dir=None):
     # ----- load input images -----
     inputs = sorted(glob(os.path.join(in_dir, "*.*")))
     assert len(inputs) > 0, "No input images found."
@@ -29,18 +38,21 @@ def evaluate_metric(in_dir, gt_dir=None):
     if gt_dir is not None and os.path.exists(gt_dir):
         gts = sorted(glob(os.path.join(gt_dir, "*.*")))
         if len(gts) != len(inputs):
-            print("[Warning] GT count != Input count. PSNR/SSIM will not be computed.")
+            print(f"[Warning] GT count ({len(gts)}) != Input count ({len(inputs)}). PSNR/SSIM will not be computed.")
             gts = None
     else:
-        gts = None  # No GT available
+        gts = None
 
     has_gt = gts is not None
 
-    psnrs, ssims = [], []
+    rgb_psnrs, rgb_ssims = [], []
+    y_psnrs, y_ssims = [], []
+    matlab_y_psnrs, matlab_y_ssims = [], []
     niqes, pis, brisques = [], [], []
+    per_image_results = []
 
-    for idx, input_path in enumerate(tqdm(inputs)):
-
+    for idx, input_path in enumerate(tqdm(inputs, desc="Evaluating")):
+        img_name = os.path.basename(input_path)
         input_img = Image.open(input_path).convert('RGB')
         input_tensor = T.ToTensor()(input_img).unsqueeze(0).to(device)
 
@@ -49,31 +61,66 @@ def evaluate_metric(in_dir, gt_dir=None):
             gt_img = Image.open(gts[idx]).convert('RGB')
             gt_tensor = T.ToTensor()(gt_img).unsqueeze(0).to(device)
 
-            psnr = psnr_metric(input_tensor, gt_tensor)
-            ssim = ssim_metric(input_tensor, gt_tensor)
+            # 1. RGB Metrics
+            rgb_psnr = psnr_metric(input_tensor, gt_tensor).item()
+            rgb_ssim = ssim_metric(input_tensor, gt_tensor).item()
+            rgb_psnrs.append(rgb_psnr)
+            rgb_ssims.append(rgb_ssim)
 
-            psnrs.append(psnr.item())
-            ssims.append(ssim.item())
+            # 2. Y-channel (BT.601) Metrics
+            in_y = rgb_to_y_bt601(input_tensor)
+            gt_y = rgb_to_y_bt601(gt_tensor)
+            y_psnr = psnr_metric(in_y, gt_y).item()
+            y_ssim = ssim_metric(in_y, gt_y).item()
+            y_psnrs.append(y_psnr)
+            y_ssims.append(y_ssim)
+
+            # 3. Y-channel (MATLAB formula) Metrics
+            in_y_matlab = rgb_to_y_matlab(input_tensor)
+            gt_y_matlab = rgb_to_y_matlab(gt_tensor)
+            matlab_y_psnr = psnr_metric(in_y_matlab, gt_y_matlab).item()
+            matlab_y_ssim = ssim_metric(in_y_matlab, gt_y_matlab).item()
+            matlab_y_psnrs.append(matlab_y_psnr)
+            matlab_y_ssims.append(matlab_y_ssim)
+
+            per_image_results.append({
+                'name': img_name,
+                'rgb_psnr': rgb_psnr,
+                'rgb_ssim': rgb_ssim,
+                'y_psnr': y_psnr,
+                'y_ssim': y_ssim,
+                'matlab_y_psnr': matlab_y_psnr,
+                'matlab_y_ssim': matlab_y_ssim
+            })
 
         # -------- Compute No-Reference Metrics --------
         else:
-            niqe = niqe_metric(input_tensor)
-            pi = PI_metric(input_tensor)
-            brisque = brisque_metric(input_tensor)
+            niqe = niqe_metric(input_tensor).item()
+            pi = PI_metric(input_tensor).item()
+            brisque = brisque_metric(input_tensor).item()
 
-            niqes.append(niqe.item())
-            pis.append(pi.item())
-            brisques.append(brisque.item())
+            niqes.append(niqe)
+            pis.append(pi)
+            brisques.append(brisque)
 
     if has_gt:
-        ave_psnr = np.mean(psnrs)
-        ave_ssim = np.mean(ssims)
-        return ave_psnr, ave_ssim, None, None, None, True
+        return {
+            'has_gt': True,
+            'rgb_psnr': np.mean(rgb_psnrs),
+            'rgb_ssim': np.mean(rgb_ssims),
+            'y_psnr': np.mean(y_psnrs),
+            'y_ssim': np.mean(y_ssims),
+            'matlab_y_psnr': np.mean(matlab_y_psnrs),
+            'matlab_y_ssim': np.mean(matlab_y_ssims),
+            'per_image': per_image_results
+        }
     else:
-        ave_niqe = np.mean(niqes)
-        ave_pi = np.mean(pis)
-        ave_brisque = np.mean(brisques)
-        return None, None, ave_niqe, ave_pi, ave_brisque, False
+        return {
+            'has_gt': False,
+            'niqe': np.mean(niqes),
+            'pi': np.mean(pis),
+            'brisque': np.mean(brisques)
+        }
 
 
 if __name__ == '__main__':
@@ -85,20 +132,33 @@ if __name__ == '__main__':
     PI_metric = pyiqa.create_metric('pi', device=device).eval()
     brisque_metric = pyiqa.create_metric('brisque', device=device).eval()
 
-    ave_psnr, ave_ssim, ave_niqe, ave_pi, ave_brisque, has_gt = evaluate_metric(
+    res = evaluate_metric(
         args.test_dir,
         args.test_gt_dir
     )
 
-    print("\n===== Evaluation Results =====")
-    if has_gt:
-        print(f"PSNR:     {ave_psnr:.2f} dB")
-        print(f"SSIM:     {ave_ssim:.4f}")
+    print("\n" + "=" * 65)
+    print("                     EVALUATION RESULTS")
+    print("=" * 65)
+    if res['has_gt']:
+        print(f"  [RGB Color Space]        PSNR: {res['rgb_psnr']:.2f} dB  |  SSIM: {res['rgb_ssim']:.4f}")
+        print(f"  [Y-Channel (BT.601)]     PSNR: {res['y_psnr']:.2f} dB  |  SSIM: {res['y_ssim']:.4f}")
+        print(f"  [Y-Channel (MATLAB)]     PSNR: {res['matlab_y_psnr']:.2f} dB  |  SSIM: {res['matlab_y_ssim']:.4f}")
+        print("-" * 65)
+        print("  Paper Benchmark (LOL):   PSNR: 20.43 dB  |  SSIM: 0.7880")
+        print("=" * 65)
+        print("\nPer-Image Breakdown:")
+        print(f"  {'Filename':<15} | {'RGB PSNR':<10} | {'Y PSNR':<10} | {'RGB SSIM':<10} | {'Y SSIM':<10}")
+        print("  " + "-" * 62)
+        for item in res['per_image']:
+            print(f"  {item['name']:<15} | {item['rgb_psnr']:>6.2f} dB   | {item['y_psnr']:>6.2f} dB   | {item['rgb_ssim']:>8.4f}   | {item['y_ssim']:>8.4f}")
+        print("=" * 65 + "\n")
     else:
         print("No GT provided.")
-        print(f"NIQE:     {ave_niqe:.3f}")
-        print(f"PI:       {ave_pi:.3f}")
-        print(f"BRISQUE:  {ave_brisque:.2f}")
+        print(f"NIQE:     {res['niqe']:.3f}")
+        print(f"PI:       {res['pi']:.3f}")
+        print(f"BRISQUE:  {res['brisque']:.2f}")
+        print("=" * 65 + "\n")
 
 
 
