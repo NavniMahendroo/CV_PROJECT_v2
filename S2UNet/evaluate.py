@@ -14,7 +14,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 parser = argparse.ArgumentParser("evaluate")
-parser.add_argument('--test_dir', type=str, default='./result_test/LIME')
+parser.add_argument('--test_dir', type=str, default='./result_test/LOL')
 parser.add_argument('--test_gt_dir', type=str, default=None, help="Folder of GT images (optional).")
 args = parser.parse_args()
 
@@ -30,13 +30,17 @@ def rgb_to_y_matlab(tensor):
 
 
 def evaluate_metric(in_dir, gt_dir=None):
-    # ----- load input images -----
-    inputs = sorted(glob(os.path.join(in_dir, "*.*")))
-    assert len(inputs) > 0, "No input images found."
+    IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')
+
+    # ----- load input images (filter out non-image files) -----
+    all_inputs = sorted(glob(os.path.join(in_dir, "*.*")))
+    inputs = [f for f in all_inputs if f.lower().endswith(IMAGE_EXTENSIONS)]
+    assert len(inputs) > 0, f"No input images found in {in_dir}."
 
     # ----- if GT exists, load and match it -----
     if gt_dir is not None and os.path.exists(gt_dir):
-        gts = sorted(glob(os.path.join(gt_dir, "*.*")))
+        all_gts = sorted(glob(os.path.join(gt_dir, "*.*")))
+        gts = [f for f in all_gts if f.lower().endswith(IMAGE_EXTENSIONS)]
         if len(gts) != len(inputs):
             print(f"[Warning] GT count ({len(gts)}) != Input count ({len(inputs)}). PSNR/SSIM will not be computed.")
             gts = None
