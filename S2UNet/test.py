@@ -19,6 +19,7 @@ def parse_args():
     parser.add_argument('--test_lowlight_dir', type=str, default="../Datasets/LOLv1/eval15/low")
     parser.add_argument('--model_path', type=str, default="./checkpoints/new_model_weights.pth")
     parser.add_argument('--save_dir', type=str, default="./result_test/LOL")
+    parser.add_argument('--use_tta', action='store_true', help='Improvement 1: Enable 8-fold Test-Time Augmentation (Self-Ensemble)')
 
     return parser.parse_args()
 
@@ -66,6 +67,35 @@ class Tester:
         output_img = Image.fromarray(numpy_img)
         output_img.save(os.path.join(self.config.save_dir, filename))
 
+    def _forward_model(self, img):
+        """Forward pass with optional 8-fold Test-Time Augmentation (Self-Ensemble)."""
+        if not getattr(self.config, 'use_tta', False):
+            return self.model(img)
+
+        # Dihedral D4 group: 4 rotations x 2 flips
+        transforms = [
+            (lambda x: x, lambda x: x),
+            (lambda x: torch.flip(x, dims=[2]), lambda x: torch.flip(x, dims=[2])),
+            (lambda x: torch.flip(x, dims=[3]), lambda x: torch.flip(x, dims=[3])),
+            (lambda x: torch.rot90(x, 1, dims=[2, 3]), lambda x: torch.rot90(x, -1, dims=[2, 3])),
+            (lambda x: torch.rot90(x, 2, dims=[2, 3]), lambda x: torch.rot90(x, -2, dims=[2, 3])),
+            (lambda x: torch.rot90(x, 3, dims=[2, 3]), lambda x: torch.rot90(x, -3, dims=[2, 3])),
+            (lambda x: torch.rot90(torch.flip(x, dims=[2]), 1, dims=[2, 3]),
+             lambda x: torch.flip(torch.rot90(x, -1, dims=[2, 3]), dims=[2])),
+            (lambda x: torch.rot90(torch.flip(x, dims=[3]), 1, dims=[2, 3]),
+             lambda x: torch.flip(torch.rot90(x, -1, dims=[2, 3]), dims=[3])),
+        ]
+        r_list, l_list = [], []
+        for tf, inv_tf in transforms:
+            aug_in = tf(img)
+            r_aug, l_aug, _ = self.model(aug_in)
+            r_list.append(inv_tf(r_aug))
+            l_list.append(inv_tf(l_aug))
+
+        r_ens = torch.mean(torch.stack(r_list, dim=0), dim=0)
+        l_ens = torch.mean(torch.stack(l_list, dim=0), dim=0)
+        return r_ens, l_ens, None
+
     def run(self):
         r_means = []
         l_means = []
@@ -74,7 +104,7 @@ class Tester:
             progress_bar = tqdm(self.test_loader, desc="Testing", leave=True)
             for low_imgs, _, low_names, _ in progress_bar:
                 low_imgs = low_imgs.to(device)
-                R, L_l, _ = self.model(low_imgs)
+                R, L_l, _ = self._forward_model(low_imgs)
                 r_means.append(R.mean().item())
                 l_means.append(L_l.mean().item())
 
@@ -91,6 +121,10 @@ class Tester:
         print("\n" + "=" * 70)
         print("===== TEST SET DECOMPOSITION DIAGNOSTIC (FIXED GAMMA 0.8) =====")
         print(f"  Gamma (Fixed)            : 0.8000  [Original Paper Baseline]")
+        if getattr(self.config, 'use_tta', False):
+            print("  Test-Time Augmentation   : ACTIVE (8-fold Dihedral D4 Self-Ensemble) [Improvement 1]")
+        else:
+            print("  Test-Time Augmentation   : DISABLED (Standard single-pass inference)")
         print(f"  Reflectance Mean (R_T)   : {mean_r:.4f}  ", end="")
         if mean_r < 0.30:
             print("[WARNING: R is too dark! (< 0.30)]")
