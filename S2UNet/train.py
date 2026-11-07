@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument('--lambda_2', type=float, default=0.05, help='Reflectance gradient weight (paper default: 0.05)')
     parser.add_argument('--lambda_3', type=float, default=0.1, help='Smoothness weight (paper default: 0.1)')
     parser.add_argument('--mu', type=float, default=0.01, help='Illumination estimation loss weight (paper default: 0.01)')
+    parser.add_argument('--lambda_color', type=float, default=0.05, help='Improvement 2: Local color constancy loss weight (default: 0.05)')
     return parser.parse_args()
 
 
@@ -49,7 +50,8 @@ class Trainer:
             lambda_1=config.lambda_1,
             lambda_2=config.lambda_2,
             lambda_3=config.lambda_3,
-            mu=config.mu
+            mu=config.mu,
+            lambda_color=config.lambda_color
         ).to(device)
         
         self.optimizer = optim.AdamW(self.model.parameters(), lr=config.lr, betas=(0.9, 0.999), weight_decay=1e-5)
@@ -101,9 +103,13 @@ class Trainer:
         initial_lambdas = self.get_lambda_values()
         self.print_lambdas("START OF TRAINING", initial_lambdas)
 
+        initial_epoch_color = 0.0
+        final_epoch_color = 0.0
+
         for epoch in range(1, self.config.epochs + 1):
             self.model.train()
             epoch_loss = 0.0
+            epoch_color_loss = 0.0
             
             progress_bar = tqdm(self.train_loader, desc=f"Epoch {epoch}/{self.config.epochs}")
             for batch_idx, batch_data in enumerate(progress_bar):
@@ -277,6 +283,7 @@ class Trainer:
                         'L_R   (Reflectance Reg)'  : stats.get('L_R', 0.0),
                         'L_s   (Smoothness)'       : stats.get('L_s', 0.0),
                         'L_il  (Final Illum Loss)' : stats.get('L_il', 0.0),
+                        'L_col (0.05*Color Constancy)': stats.get('L_color_weighted', 0.0),
                     }
                     vals = [v for v in loss_breakdown.values() if v > 0]
                     avg_val = sum(vals) / len(vals) if vals else 1.0
@@ -289,6 +296,7 @@ class Trainer:
                         print(f"  {term_name:25s}: {val:.6f}{flag}")
                     print(f"  -------------------------------------------------")
                     print(f"  Summed Total Loss        : {loss.item():.6f}")
+                    print(f"  Raw Color Loss           : {stats.get('L_color', 0.0):.6f}")
                     print("=" * 70)
                 
                 # Backward pass
@@ -324,11 +332,16 @@ class Trainer:
                 self.optimizer.step()
                 
                 epoch_loss += loss.item()
-                progress_bar.set_postfix({'Loss': f"{loss.item():.4f}"})
+                epoch_color_loss += stats.get('L_color', 0.0)
+                progress_bar.set_postfix({'Loss': f"{loss.item():.4f}", 'Color': f"{stats.get('L_color', 0.0):.4f}"})
                 
             self.scheduler.step()
             avg_loss = epoch_loss / len(self.train_loader)
-            print(f"Epoch [{epoch}/{self.config.epochs}] Average Loss: {avg_loss:.4f}")
+            avg_color = epoch_color_loss / len(self.train_loader)
+            if epoch == 1:
+                initial_epoch_color = avg_color
+            final_epoch_color = avg_color
+            print(f"Epoch [{epoch}/{self.config.epochs}] Average Loss: {avg_loss:.4f} | Color Loss: {avg_color:.4f}")
             
             # Save checkpoint
             if epoch % 10 == 0 or epoch == self.config.epochs:
@@ -338,6 +351,7 @@ class Trainer:
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'loss': avg_loss,
+                    'color_loss': avg_color,
                     'num_steps': self.config.num_steps
                 }, save_path)
                 print(f"Checkpoint saved to {save_path}")
@@ -363,6 +377,22 @@ class Trainer:
             print("  [OK] Learnable step sizes lambda successfully updated during training.")
         else:
             print("  [WARNING] Step sizes lambda DID NOT CHANGE! They may not be properly registered as parameters.")
+        print("=" * 70 + "\n")
+
+        # =====================================================================
+        # Diagnostic 8: Verification of Improvement 2 (Color Constancy)
+        # =====================================================================
+        print("\n" + "=" * 70)
+        print("===== DIAGNOSTIC 8: IMPROVEMENT 2 (COLOR CONSTANCY) VERIFICATION =====")
+        print(f"  Epoch 1   Color Loss (raw)      : {initial_epoch_color:.6f}")
+        print(f"  Epoch {self.config.epochs} Color Loss (raw)      : {final_epoch_color:.6f}")
+        print(f"  Weighted Color Loss (0.05*L_col): {final_epoch_color * self.config.lambda_color:.6f}")
+        print(f"  Final Total Loss                : {avg_loss:.6f}")
+        color_pct = (final_epoch_color * self.config.lambda_color / (avg_loss + 1e-10)) * 100.0
+        print(f"  Color Loss Share of Total Loss  : {color_pct:.2f}%")
+        if final_epoch_color < initial_epoch_color:
+            pct_drop = ((initial_epoch_color - final_epoch_color) / (initial_epoch_color + 1e-10)) * 100.0
+            print(f"  [OK] Color channel imbalance decreased by {pct_drop:.1f}% over {self.config.epochs} epochs.")
         print("=" * 70 + "\n")
 
 

@@ -2,8 +2,27 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+def color_constancy_loss(img, patch_size=16):
+    """
+    Local Color Constancy Loss (Gray-World Retinex Prior).
+    Evaluates pairwise differences across RGB channels within local spatial patches.
+    Neutralizes camera sensor color cast (e.g. green/yellow shadow tint) in dark channels.
+    img: Tensor of shape (B, 3, H, W) in [0, 1].
+    """
+    mean_rgb = F.avg_pool2d(img, kernel_size=patch_size, stride=patch_size)
+    r = mean_rgb[:, 0:1, :, :]
+    g = mean_rgb[:, 1:2, :, :]
+    b = mean_rgb[:, 2:3, :, :]
+
+    d_rg = torch.pow(r - g, 2)
+    d_rb = torch.pow(r - b, 2)
+    d_gb = torch.pow(g - b, 2)
+
+    return torch.mean(d_rg + d_rb + d_gb)
+
 class S2UNetLoss(nn.Module):
-    def __init__(self, num_steps=3, lambda_1=0.15, lambda_2=0.05, lambda_3=0.1, theta=0.1, mu=0.01):
+    def __init__(self, num_steps=3, lambda_1=0.15, lambda_2=0.05, lambda_3=0.1, theta=0.1, mu=0.01, lambda_color=0.05):
         super().__init__()
         self.num_steps = num_steps
         self.lambda_1 = lambda_1
@@ -11,6 +30,7 @@ class S2UNetLoss(nn.Module):
         self.lambda_3 = lambda_3
         self.theta = theta
         self.mu = mu
+        self.lambda_color = lambda_color
 
     def _get_max_rgb(self, I):
         # I shape: (B, 3, H, W)
@@ -65,6 +85,7 @@ class S2UNetLoss(nn.Module):
         L_rec = 0.0
         L_R = 0.0
         L_s = 0.0
+        L_color = 0.0
         
         target_HE = self._histogram_equalization(max_I_l)
         
@@ -94,17 +115,24 @@ class S2UNetLoss(nn.Module):
                 torch.mean(grad_L_n_k * weight_R)
             )
 
+            # Improvement 2: Local Color Constancy Loss (Gray-World Retinex Prior)
+            # Penalizes color channel imbalance to eliminate camera sensor tint in shadows
+            L_color += omega_k * color_constancy_loss(R_k)
+
         # Final Illumination Loss (L_il)
         _, L_l_T, L_n_T = stage_outputs[-1]
         L_il = F.l1_loss(L_l_T, max_I_l) + F.l1_loss(L_n_T, max_I_n)
         
         L_uf = L_rec + L_R + L_s + self.mu * L_il
         
-        L_total = L_id + L_uf
+        L_total = L_id + L_uf + self.lambda_color * L_color
         
         # Compile stats dict for logging and diagnostic balance check
         stats = {
             'L_total': L_total.item(),
+            'L_base': (L_id + L_uf).item(),
+            'L_color': L_color.item(),
+            'L_color_weighted': (self.lambda_color * L_color).item(),
             'L_id': L_id.item(),
             'L_ir': L_ir.item(),
             'L_con': L_con.item(),

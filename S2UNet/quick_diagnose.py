@@ -215,6 +215,7 @@ def run_diagnostics(low_dir, gt_dir=None, batch_size=4):
         'L_R   (Reflectance Reg)'  : stats.get('L_R', 0.0),
         'L_s   (Smoothness)'       : stats.get('L_s', 0.0),
         'L_il  (Final Illum Loss)' : stats.get('L_il', 0.0),
+        'L_col (0.05*Color Constancy)': stats.get('L_color_weighted', 0.0),
     }
     vals = [v for v in loss_breakdown.values() if v > 0]
     avg_val = sum(vals) / len(vals) if vals else 1.0
@@ -227,6 +228,7 @@ def run_diagnostics(low_dir, gt_dir=None, batch_size=4):
         print(f"  {term_name:25s}: {val:.6f}{flag}")
     print(f"  -------------------------------------------------")
     print(f"  Summed Total Loss        : {loss.item():.6f}")
+    print(f"  Raw Color Loss           : {stats.get('L_color', 0.0):.6f}")
     print("=" * 70)
 
     # 5. Backward Pass
