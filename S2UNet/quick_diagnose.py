@@ -103,7 +103,7 @@ def run_diagnostics(low_dir, gt_dir=None, batch_size=4):
 
     # 2. Setup Model & Loss
     model = RetinexUnfoldingNetUnsupervised(num_steps=3).to(device)
-    criterion = S2UNetLoss(num_steps=3).to(device)
+    criterion = S2UNetLoss(num_steps=3, use_clahe=True).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=1e-3)
 
     # --------------------------------------------------------------------------
@@ -116,11 +116,11 @@ def run_diagnostics(low_dir, gt_dir=None, batch_size=4):
     init_lambdas = get_lambdas()
     print("\n" + "=" * 70)
     print("===== DIAGNOSTIC 5: LEARNABLE STEP SIZES LAMBDA (INITIAL) =====")
-    for s, l1, l2, l3 in init_lambdas:
-        print(f"  Stage {s}: lambda_p = {l1:.6f} | lambda_q_low = {l2:.6f} | lambda_q_norm = {l3:.6f}")
+    for stage, l1, l2, l3 in init_lambdas:
+        print(f"  Stage {stage}: lambda_p = {l1:.6f} | lambda_q_low = {l2:.6f} | lambda_q_norm = {l3:.6f}")
     print("=" * 70)
 
-    # 3. Forward Pass (Fixed gamma 0.8)
+    # 3. Forward Pass with Diagnostics
     I_n = torch.pow(I_l, 0.8)
     s = 1000.0
     I_l_noisy = torch.poisson(I_l.clamp(min=1e-6, max=1.0) * s) / s
@@ -207,6 +207,7 @@ def run_diagnostics(low_dir, gt_dir=None, batch_size=4):
     # --------------------------------------------------------------------------
     print("\n" + "=" * 70)
     print("===== DIAGNOSTIC 6: INDIVIDUAL LOSS TERMS BALANCE =====")
+    print(f"  Target Brightness Method : {stats.get('target_method', 'Global_HE')}")
     loss_breakdown = {
         'L_ir  (Init Recon)'       : stats.get('L_ir', 0.0),
         'L_con (Consistency)'      : stats.get('L_con', 0.0),

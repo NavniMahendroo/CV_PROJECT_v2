@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 def color_constancy_loss(img, patch_size=16):
     """
-    Local Color Constancy Loss (Gray-World Retinex Prior).
+    Improvement 2: Local Color Constancy Loss (Gray-World Retinex Prior).
     Evaluates pairwise differences across RGB channels within local spatial patches.
     Neutralizes camera sensor color cast (e.g. green/yellow shadow tint) in dark channels.
     img: Tensor of shape (B, 3, H, W) in [0, 1].
@@ -21,8 +21,50 @@ def color_constancy_loss(img, patch_size=16):
 
     return torch.mean(d_rg + d_rb + d_gb)
 
+
+def apply_clahe(img, clip_limit=2.0, tile_grid_size=8):
+    """
+    Improvement 3: Contrast-Limited Adaptive Histogram Equalization (CLAHE).
+    Replaces the paper's Global Histogram Equalization target in Eq. (15).
+    Operates on local contextual tiles and clips contrast amplification to
+    prevent sensor shot noise in deep shadows from being amplified into the
+    reflectance target.
+    
+    img: Tensor of shape (B, 1, H, W) in [0, 1].
+    """
+    with torch.no_grad():
+        try:
+            import cv2
+            import numpy as np
+
+            B, C, H, W = img.shape
+            target = torch.zeros_like(img)
+            clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_grid_size, tile_grid_size))
+
+            for b in range(B):
+                for c in range(C):
+                    arr = (img[b, c].detach().cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+                    res = clahe.apply(arr)
+                    target[b, c] = torch.from_numpy(res).to(img.device).float() / 255.0
+            return target
+        except ImportError:
+            # Fallback to standard global histogram equalization if cv2 is unavailable
+            B, C, H, W = img.shape
+            target = torch.zeros_like(img)
+            for b in range(B):
+                for c in range(C):
+                    img_flat = img[b, c].view(-1)
+                    sorted_img, indices = torch.sort(img_flat)
+                    cdf = torch.arange(1, H * W + 1, device=img.device, dtype=torch.float32) / (H * W)
+                    target_flat = torch.zeros_like(img_flat)
+                    target_flat[indices] = cdf
+                    target[b, c] = target_flat.view(H, W)
+            return target
+
+
 class S2UNetLoss(nn.Module):
-    def __init__(self, num_steps=3, lambda_1=0.15, lambda_2=0.05, lambda_3=0.1, theta=0.1, mu=0.01, lambda_color=0.05):
+    def __init__(self, num_steps=3, lambda_1=0.15, lambda_2=0.05, lambda_3=0.1, theta=0.1, mu=0.01, 
+                 lambda_color=0.05, use_clahe=True, clahe_clip_limit=2.0, clahe_tile_size=8):
         super().__init__()
         self.num_steps = num_steps
         self.lambda_1 = lambda_1
@@ -31,6 +73,9 @@ class S2UNetLoss(nn.Module):
         self.theta = theta
         self.mu = mu
         self.lambda_color = lambda_color
+        self.use_clahe = use_clahe
+        self.clahe_clip_limit = clahe_clip_limit
+        self.clahe_tile_size = clahe_tile_size
 
     def _get_max_rgb(self, I):
         # I shape: (B, 3, H, W)
@@ -53,8 +98,7 @@ class S2UNetLoss(nn.Module):
         return torch.abs(grad_x) + torch.abs(grad_y)
 
     def _histogram_equalization(self, img):
-        # Differentiable approximation is not needed since it's a target.
-        # Compute empirical CDF and map values
+        # Original paper Global Histogram Equalization target (Eq. 15)
         with torch.no_grad():
             B, C, H, W = img.size()
             target = torch.zeros_like(img)
@@ -87,7 +131,15 @@ class S2UNetLoss(nn.Module):
         L_s = 0.0
         L_color = 0.0
         
-        target_HE = self._histogram_equalization(max_I_l)
+        # Improvement 3: Contrast-Limited Adaptive Histogram Equalization (CLAHE)
+        # Replaces the paper's Global Histogram Equalization in Eq. (15) to prevent
+        # over-amplifying sensor noise in dark shadows.
+        if self.use_clahe:
+            target_brightness = apply_clahe(
+                max_I_l, clip_limit=self.clahe_clip_limit, tile_grid_size=self.clahe_tile_size
+            )
+        else:
+            target_brightness = self._histogram_equalization(max_I_l)
         
         for k in range(self.num_steps):
             R_k, L_l_k, L_n_k = stage_outputs[k]
@@ -99,7 +151,7 @@ class S2UNetLoss(nn.Module):
             omega_k = 1.0 if k == self.num_steps - 1 else 0.3
             max_R_k = self._get_max_rgb(R_k)
             
-            term1 = self.lambda_1 * F.l1_loss(max_R_k, target_HE)
+            term1 = self.lambda_1 * F.l1_loss(max_R_k, target_brightness)
             term2 = self.lambda_2 * torch.mean(self._gradient_norm(R_k))
             L_R += omega_k * (term1 + term2)
             
@@ -133,6 +185,8 @@ class S2UNetLoss(nn.Module):
             'L_base': (L_id + L_uf).item(),
             'L_color': L_color.item(),
             'L_color_weighted': (self.lambda_color * L_color).item(),
+            'use_clahe': self.use_clahe,
+            'target_method': 'CLAHE (Imp 3)' if self.use_clahe else 'Global_HE (Paper)',
             'L_id': L_id.item(),
             'L_ir': L_ir.item(),
             'L_con': L_con.item(),
