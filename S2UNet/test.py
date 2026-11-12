@@ -19,7 +19,12 @@ def parse_args():
     parser.add_argument('--test_lowlight_dir', type=str, default="../Datasets/LOLv1/eval15/low")
     parser.add_argument('--model_path', type=str, default="./checkpoints/new_model_weights.pth")
     parser.add_argument('--save_dir', type=str, default="./result_test/LOL")
-    parser.add_argument('--use_tta', action='store_true', help='Improvement 1: Enable 8-fold Test-Time Augmentation (Self-Ensemble)')
+    parser.add_argument('--use_tta', action='store_true', help='Enable 8-fold Dihedral D4 Test-Time Augmentation (Self-Ensemble)')
+    parser.add_argument('--adaptive_gamma', action='store_true', help='Enable Image-Level Adaptive Gamma based on input scene brightness')
+    parser.add_argument('--gamma', type=float, default=0.8, help='Base / Fixed gamma value for I_n = I_l^gamma (default: 0.8)')
+    parser.add_argument('--gamma_alpha', type=float, default=0.5, help='Sensitivity scale for adaptive gamma (default: 0.5)')
+    parser.add_argument('--gamma_min', type=float, default=0.72, help='Lower clamp for adaptive gamma (default: 0.72)')
+    parser.add_argument('--gamma_max', type=float, default=0.85, help='Upper clamp for adaptive gamma (default: 0.85)')
 
     return parser.parse_args()
 
@@ -67,10 +72,26 @@ class Tester:
         output_img = Image.fromarray(numpy_img)
         output_img.save(os.path.join(self.config.save_dir, filename))
 
-    def _forward_model(self, img):
+    def _compute_gamma(self, img_tensor):
+        """
+        Calculates image-level adaptive gamma based on input low-light scene brightness:
+          gamma = clamp(gamma_base + alpha * (mean(I_l) - 0.0605), gamma_min, gamma_max)
+        Anchored to LOL-v1 training set mean (0.0605).
+        Darker scenes receive slightly lower gamma (e.g. 0.75-0.78) for enhanced guidance,
+        while brighter scenes receive higher gamma (up to 0.85) to prevent over-exposure.
+        """
+        if not getattr(self.config, 'adaptive_gamma', False):
+            return self.config.gamma
+
+        mean_val = img_tensor.mean().item()
+        dyn_gamma = self.config.gamma + self.config.gamma_alpha * (mean_val - 0.0605)
+        clamped_gamma = max(self.config.gamma_min, min(self.config.gamma_max, dyn_gamma))
+        return clamped_gamma
+
+    def _forward_model(self, img, gamma=None):
         """Forward pass with optional 8-fold Test-Time Augmentation (Self-Ensemble)."""
         if not getattr(self.config, 'use_tta', False):
-            return self.model(img)
+            return self.model(img, gamma=gamma)
 
         # Dihedral D4 group: 4 rotations x 2 flips
         transforms = [
@@ -88,7 +109,7 @@ class Tester:
         r_list, l_list = [], []
         for tf, inv_tf in transforms:
             aug_in = tf(img)
-            r_aug, l_aug, _ = self.model(aug_in)
+            r_aug, l_aug, _ = self.model(aug_in, gamma=gamma)
             r_list.append(inv_tf(r_aug))
             l_list.append(inv_tf(l_aug))
 
@@ -99,12 +120,19 @@ class Tester:
     def run(self):
         r_means = []
         l_means = []
+        per_image_gamma = []
 
         with torch.no_grad():
             progress_bar = tqdm(self.test_loader, desc="Testing", leave=True)
             for low_imgs, _, low_names, _ in progress_bar:
                 low_imgs = low_imgs.to(device)
-                R, L_l, _ = self._forward_model(low_imgs)
+                
+                # Compute effective gamma for this image
+                gamma = self._compute_gamma(low_imgs)
+                input_mean = low_imgs.mean().item()
+                per_image_gamma.append((os.path.basename(low_names[0]), input_mean, gamma))
+
+                R, L_l, _ = self._forward_model(low_imgs, gamma=gamma)
                 r_means.append(R.mean().item())
                 l_means.append(L_l.mean().item())
 
@@ -119,12 +147,21 @@ class Tester:
         mean_l = sum(l_means) / len(l_means) if l_means else 0.0
 
         print("\n" + "=" * 70)
-        print("===== TEST SET DECOMPOSITION DIAGNOSTIC (FIXED GAMMA 0.8) =====")
-        print(f"  Gamma (Fixed)            : 0.8000  [Original Paper Baseline]")
+        if getattr(self.config, 'adaptive_gamma', False):
+            gammas = [g[2] for g in per_image_gamma]
+            avg_gamma = sum(gammas) / len(gammas)
+            print("===== TEST SET DECOMPOSITION DIAGNOSTIC (IMAGE-LEVEL ADAPTIVE GAMMA) =====")
+            print(f"  Gamma Mode               : ADAPTIVE (Anchored at 0.0605, range [{self.config.gamma_min:.2f}, {self.config.gamma_max:.2f}])")
+            print(f"  Mean Evaluated Gamma     : {avg_gamma:.4f} (Min: {min(gammas):.4f}, Max: {max(gammas):.4f})")
+        else:
+            print("===== TEST SET DECOMPOSITION DIAGNOSTIC (FIXED GAMMA 0.8) =====")
+            print(f"  Gamma (Fixed)            : {self.config.gamma:.4f}  [Original Paper Baseline]")
+
         if getattr(self.config, 'use_tta', False):
-            print("  Test-Time Augmentation   : ACTIVE (8-fold Dihedral D4 Self-Ensemble) [Improvement 1]")
+            print("  Test-Time Augmentation   : ACTIVE (8-fold Dihedral D4 Self-Ensemble)")
         else:
             print("  Test-Time Augmentation   : DISABLED (Standard single-pass inference)")
+
         print(f"  Reflectance Mean (R_T)   : {mean_r:.4f}  ", end="")
         if mean_r < 0.30:
             print("[WARNING: R is too dark! (< 0.30)]")
@@ -136,6 +173,16 @@ class Tester:
             print("[WARNING: L is too bright! (> 0.70)]")
         else:
             print("[OK: L is in expected range (<= 0.70)]")
+
+        if getattr(self.config, 'adaptive_gamma', False):
+            print("\n  Per-Image Adaptive Gamma Breakdown:")
+            print("  " + "-" * 56)
+            print(f"  {'Filename':<16} | {'Input Mean':<14} | {'Evaluated Gamma':<16}")
+            print("  " + "-" * 56)
+            for fname, in_m, g_val in per_image_gamma:
+                print(f"  {fname:<16} | {in_m:<14.4f} | {g_val:<16.4f}")
+            print("  " + "-" * 56)
+
         print("=" * 70 + "\n")
 
 
