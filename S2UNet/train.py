@@ -32,10 +32,8 @@ def parse_args():
     parser.add_argument('--lambda_3', type=float, default=0.1, help='Smoothness weight (paper default: 0.1)')
     parser.add_argument('--mu', type=float, default=0.01, help='Illumination estimation loss weight (paper default: 0.01)')
     parser.add_argument('--lambda_color', type=float, default=0.05, help='Improvement 2: Local color constancy loss weight (default: 0.05)')
-    parser.add_argument('--use_clahe', action='store_true', default=True, help='Improvement 3: Use CLAHE instead of Global HE for reflectance brightness target (Eq. 15)')
-    parser.add_argument('--no_clahe', dest='use_clahe', action='store_false', help='Disable CLAHE and revert to Global HE')
-    parser.add_argument('--clahe_clip_limit', type=float, default=2.0, help='CLAHE contrast clip limit (default: 2.0)')
-    parser.add_argument('--clahe_tile_size', type=int, default=8, help='CLAHE tile grid size (default: 8x8)')
+    parser.add_argument('--use_cosine_lr', action='store_true', default=True, help='Improvement 1: Use Cosine Annealing Learning Rate Schedule (default: True)')
+    parser.add_argument('--fixed_lr', dest='use_cosine_lr', action='store_false', help='Use fixed learning rate of 0.001 (paper baseline in Sec IV-A1)')
     return parser.parse_args()
 
 
@@ -55,14 +53,16 @@ class Trainer:
             lambda_2=config.lambda_2,
             lambda_3=config.lambda_3,
             mu=config.mu,
-            lambda_color=config.lambda_color,
-            use_clahe=config.use_clahe,
-            clahe_clip_limit=config.clahe_clip_limit,
-            clahe_tile_size=config.clahe_tile_size
+            lambda_color=config.lambda_color
         ).to(device)
         
         self.optimizer = optim.AdamW(self.model.parameters(), lr=config.lr, betas=(0.9, 0.999), weight_decay=1e-5)
-        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=config.epochs)
+        
+        # Improvement 1: Dynamic Learning Rate Scheduling (Cosine Annealing) vs Paper's Fixed 0.001 LR (Sec IV-A1)
+        if config.use_cosine_lr:
+            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=config.epochs, eta_min=1e-6)
+        else:
+            self.scheduler = None
         
         # Auto-detect GT reference directory if not provided
         gt_dir = config.train_gt_dir
@@ -107,12 +107,13 @@ class Trainer:
         print(f"Starting training for {self.config.epochs} epochs on {device}...")
         print("=" * 70)
         print("===== S2UNET TRAINING CONFIGURATION =====")
-        print(f"  Fixed Gamma (Eq. 2)       : {self.config.gamma:.4f} [Paper Baseline]")
-        print(f"  Color Constancy (Imp 2)   : ACTIVE (lambda_color = {self.config.lambda_color})")
-        if self.config.use_clahe:
-            print(f"  Reflectance Target (Imp 3): ACTIVE (CLAHE, clip_limit={self.config.clahe_clip_limit}, tile={self.config.clahe_tile_size}x{self.config.clahe_tile_size})")
+        print(f"  Fixed Gamma (Eq. 2)            : {self.config.gamma:.4f} [Paper Baseline]")
+        if self.config.use_cosine_lr:
+            print(f"  Learning Rate Schedule (Imp 1) : ACTIVE (Cosine Annealing: {self.config.lr:.1e} -> 1e-6) [Paper used fixed LR]")
         else:
-            print(f"  Reflectance Target        : Global Histogram Equalization (Paper Baseline)")
+            print(f"  Learning Rate Schedule         : FIXED {self.config.lr:.1e} (Paper Baseline Sec IV-A1)")
+        print(f"  Color Constancy Loss (Imp 2)   : ACTIVE (lambda_color = {self.config.lambda_color})")
+        print(f"  Reflectance Target (Eq. 15)    : Global Histogram Equalization (Paper Baseline Anchor)")
         print("=" * 70)
         
         # Diagnostic 5: Record learnable lambdas at start of training
@@ -291,7 +292,6 @@ class Trainer:
                 if batch_idx == 0 and epoch == 1:
                     print("\n" + "=" * 70)
                     print("===== DIAGNOSTIC 6: INDIVIDUAL LOSS TERMS BALANCE =====")
-                    print(f"  Target Brightness Method : {stats.get('target_method', 'Global_HE')}")
                     loss_breakdown = {
                         'L_ir  (Init Recon)'       : stats.get('L_ir', 0.0),
                         'L_con (Consistency)'      : stats.get('L_con', 0.0),
@@ -352,7 +352,9 @@ class Trainer:
                 epoch_color_loss += stats.get('L_color', 0.0)
                 progress_bar.set_postfix({'Loss': f"{loss.item():.4f}", 'Color': f"{stats.get('L_color', 0.0):.4f}"})
                 
-            self.scheduler.step()
+            if self.scheduler is not None:
+                self.scheduler.step()
+                
             avg_loss = epoch_loss / len(self.train_loader)
             avg_color = epoch_color_loss / len(self.train_loader)
             if epoch == 1:
@@ -370,7 +372,7 @@ class Trainer:
                     'loss': avg_loss,
                     'color_loss': avg_color,
                     'num_steps': self.config.num_steps,
-                    'use_clahe': self.config.use_clahe
+                    'use_cosine_lr': self.config.use_cosine_lr
                 }, save_path)
                 print(f"Checkpoint saved to {save_path}")
 

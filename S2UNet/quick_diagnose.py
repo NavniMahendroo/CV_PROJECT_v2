@@ -103,7 +103,7 @@ def run_diagnostics(low_dir, gt_dir=None, batch_size=4):
 
     # 2. Setup Model & Loss
     model = RetinexUnfoldingNetUnsupervised(num_steps=3).to(device)
-    criterion = S2UNetLoss(num_steps=3, use_clahe=True).to(device)
+    criterion = S2UNetLoss(num_steps=3).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=1e-3)
 
     # --------------------------------------------------------------------------
@@ -207,7 +207,6 @@ def run_diagnostics(low_dir, gt_dir=None, batch_size=4):
     # --------------------------------------------------------------------------
     print("\n" + "=" * 70)
     print("===== DIAGNOSTIC 6: INDIVIDUAL LOSS TERMS BALANCE =====")
-    print(f"  Target Brightness Method : {stats.get('target_method', 'Global_HE')}")
     loss_breakdown = {
         'L_ir  (Init Recon)'       : stats.get('L_ir', 0.0),
         'L_con (Consistency)'      : stats.get('L_con', 0.0),
