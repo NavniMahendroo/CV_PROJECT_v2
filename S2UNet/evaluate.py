@@ -63,6 +63,9 @@ def evaluate_metric(in_dir, gt_dir=None):
         # -------- Compute Full-Reference Metrics --------
         if has_gt:
             gt_img = Image.open(gts[idx]).convert('RGB')
+            # Handle resolution difference if low and high are at different dimensions (e.g. LSRW)
+            if gt_img.size != input_img.size:
+                gt_img = gt_img.resize(input_img.size, Image.Resampling.BICUBIC)
             gt_tensor = T.ToTensor()(gt_img).unsqueeze(0).to(device)
 
             # 1. RGB Metrics
@@ -98,33 +101,33 @@ def evaluate_metric(in_dir, gt_dir=None):
             })
 
         # -------- Compute No-Reference Metrics --------
-        else:
-            niqe = niqe_metric(input_tensor).item()
-            pi = PI_metric(input_tensor).item()
-            brisque = brisque_metric(input_tensor).item()
+        niqe = niqe_metric(input_tensor).item()
+        pi = PI_metric(input_tensor).item()
+        brisque = brisque_metric(input_tensor).item()
 
-            niqes.append(niqe)
-            pis.append(pi)
-            brisques.append(brisque)
+        niqes.append(niqe)
+        pis.append(pi)
+        brisques.append(brisque)
+
+    result_dict = {
+        'niqe': float(np.mean(niqes)),
+        'pi': float(np.mean(pis)),
+        'brisque': float(np.mean(brisques)),
+        'has_gt': has_gt
+    }
 
     if has_gt:
-        return {
-            'has_gt': True,
-            'rgb_psnr': np.mean(rgb_psnrs),
-            'rgb_ssim': np.mean(rgb_ssims),
-            'y_psnr': np.mean(y_psnrs),
-            'y_ssim': np.mean(y_ssims),
-            'matlab_y_psnr': np.mean(matlab_y_psnrs),
-            'matlab_y_ssim': np.mean(matlab_y_ssims),
+        result_dict.update({
+            'rgb_psnr': float(np.mean(rgb_psnrs)),
+            'rgb_ssim': float(np.mean(rgb_ssims)),
+            'y_psnr': float(np.mean(y_psnrs)),
+            'y_ssim': float(np.mean(y_ssims)),
+            'matlab_y_psnr': float(np.mean(matlab_y_psnrs)),
+            'matlab_y_ssim': float(np.mean(matlab_y_ssims)),
             'per_image': per_image_results
-        }
-    else:
-        return {
-            'has_gt': False,
-            'niqe': np.mean(niqes),
-            'pi': np.mean(pis),
-            'brisque': np.mean(brisques)
-        }
+        })
+
+    return result_dict
 
 
 if __name__ == '__main__':
@@ -148,6 +151,7 @@ if __name__ == '__main__':
         print(f"  [RGB Color Space]        PSNR: {res['rgb_psnr']:.2f} dB  |  SSIM: {res['rgb_ssim']:.4f}")
         print(f"  [Y-Channel (BT.601)]     PSNR: {res['y_psnr']:.2f} dB  |  SSIM: {res['y_ssim']:.4f}")
         print(f"  [Y-Channel (MATLAB)]     PSNR: {res['matlab_y_psnr']:.2f} dB  |  SSIM: {res['matlab_y_ssim']:.4f}")
+        print(f"  [No-Reference Metrics]   NIQE: {res['niqe']:.3f}  |  PI: {res['pi']:.3f}  |  BRISQUE: {res['brisque']:.2f}")
         print("-" * 65)
         print("  Paper Benchmark (LOL):   PSNR: 20.43 dB  |  SSIM: 0.7880")
         print("=" * 65)
@@ -163,6 +167,3 @@ if __name__ == '__main__':
         print(f"PI:       {res['pi']:.3f}")
         print(f"BRISQUE:  {res['brisque']:.2f}")
         print("=" * 65 + "\n")
-
-
-
