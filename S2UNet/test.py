@@ -149,11 +149,19 @@ class Tester:
         print("\n" + "=" * 70)
         if getattr(self.config, 'adaptive_gamma', False):
             gammas = [g[2] for g in per_image_gamma]
+            if not gammas:
+                print("  [ERROR] No images found in test directory! Check folder path.")
+                print("=" * 70 + "\n")
+                return
             avg_gamma = sum(gammas) / len(gammas)
             print("===== TEST SET DECOMPOSITION DIAGNOSTIC (IMAGE-LEVEL ADAPTIVE GAMMA) =====")
             print(f"  Gamma Mode               : ADAPTIVE (Anchored at 0.0605, range [{self.config.gamma_min:.2f}, {self.config.gamma_max:.2f}])")
             print(f"  Mean Evaluated Gamma     : {avg_gamma:.4f} (Min: {min(gammas):.4f}, Max: {max(gammas):.4f})")
         else:
+            if not r_means:
+                print("  [ERROR] No images found in test directory! Check folder path.")
+                print("=" * 70 + "\n")
+                return
             print("===== TEST SET DECOMPOSITION DIAGNOSTIC (FIXED GAMMA 0.8) =====")
             print(f"  Gamma (Fixed)            : {self.config.gamma:.4f}  [Original Paper Baseline]")
 
